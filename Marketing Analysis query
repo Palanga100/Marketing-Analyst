@@ -1,0 +1,86 @@
+WITH time_difference_between_events AS (																									
+SELECT																									
+TIMESTAMP_MICROS(event_timestamp) AS event_timestamp,																									
+-----------The column "event_timestamp" in the table appears to represent a timestamp associated with each event in the dataset.																									
+DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,																									
+event_name,																									
+user_pseudo_id,																									
+event_value_in_usd,																									
+category,																									
+country,																									
+LAG(TIMESTAMP_MICROS(event_timestamp)) OVER(PARTITION BY user_pseudo_id ORDER BY TIMESTAMP_MICROS(event_timestamp)) AS prev_event_timestamp,																									
+------it retrieves the timestamp of the event that occurred just before the current event and defines the window over which the LAG function operates.																									
+TIMESTAMP_DIFF(TIMESTAMP_MICROS(event_timestamp), LAG(TIMESTAMP_MICROS(event_timestamp)) OVER(PARTITION BY user_pseudo_id ORDER BY TIMESTAMP_MICROS(event_timestamp)), SECOND) AS time_since_last_event																									
+----------calculates the time difference (in seconds) between the current event's timestamp and the previous event's timestamp.																									
+FROM `tc-da-1.turing_data_analytics.raw_events`																									
+),																									
+																									
+Mark_Sessions AS (																									
+SELECT																									
+*,																									
+IFNULL(																									
+CASE																									
+WHEN time_since_last_event IS NULL OR time_since_last_event > 1800 THEN 1 ----------This CTE introduces a session marker that determines when a new user session starts based on a condition - it marks a session start if the time since the last event is null or greater than 1800 seconds (30 minutes).																									
+ELSE 0																									
+END,																									
+1																									
+) AS session_marker																									
+FROM time_difference_between_events																									
+),																									
+																									
+With_Session_Count AS (																									
+SELECT																									
+-----------It keeps track of how many times a user starts a new session by counting them.																									
+user_pseudo_id,																									
+event_date,																									
+event_timestamp,																									
+event_name,																									
+event_value_in_usd,																									
+category,																									
+country,																									
+session_marker,																									
+SUM(session_marker) OVER(PARTITION BY user_pseudo_id ORDER BY event_timestamp) AS session_count																									
+FROM Mark_Sessions																									
+),																									
+																									
+session_start_end AS (																									
+SELECT																									
+----------------This CTE aggregates data to find the start and end timestamps for each user session. It also calculates the total event value in USD for each session.																									
+t.event_date,																									
+t.user_pseudo_id,																									
+MIN(t.event_timestamp) AS session_start,																									
+MAX(t.event_timestamp) AS session_end,																									
+t.category,																									
+t.country,																									
+SUM(t.event_value_in_usd) AS event_value_in_usd																									
+FROM With_Session_Count t																									
+GROUP BY t.user_pseudo_id, t.session_count, t.category, t.country, t.event_date																									
+),																									
+																									
+campaigns AS (																									
+SELECT																									
+--------This CTE extracts campaigns																									
+user_pseudo_id,																									
+IF																									
+(campaign IN ('Holiday_V1', 'Holiday_V2', 'NewYear_V1', 'NewYear_V2', 'BlackFriday_V1', 'BlackFriday_V2', 'Data Share Promo'),																									
+campaign, NULL) AS campaign																									
+FROM `tc-da-1.turing_data_analytics.raw_events`																									
+GROUP BY user_pseudo_id, campaign																									
+)																									
+																									
+SELECT																									
+s.*,																									
+campaign.campaign, -- Added the campaign column to the table																									
+TIMESTAMP_DIFF(s.session_end, s.session_start, MINUTE) AS session_duration_min																									
+FROM																									
+session_start_end s																									
+LEFT JOIN																									
+campaigns campaign																									
+ON																									
+s.user_pseudo_id = campaign.user_pseudo_id																									
+ORDER BY																									
+s.user_pseudo_id,																									
+s.session_start;																									
+																									
+																									
+																									
